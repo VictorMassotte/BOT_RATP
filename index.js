@@ -1,43 +1,171 @@
-const Discord = require('discord.js');
-const fs =require('fs');
+require("dotenv").config();
+const Discord = require("discord.js");
+const moment = require("moment-timezone");
+const { default: axios } = require("axios");
+const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
 
-const bot = new Discord.Client({disableEveryone: true});
+const Client = new Discord.Client({ intents: [] });
+console.log("Connexion en cours...");
 
-bot.commands = new Discord.Collection();
+const data = new SlashCommandBuilder()
+  .setName("bus")
+  .setDescription("Donne les horaires des bus 157")
+  .addStringOption((option) =>
+    option.setName("numero_bus")
+    .setDescription("Numero de bus")
+    .setRequired(true)
+    .addChoices(
+        { name: '157', value: '157' },
+    ))
+    .addStringOption((option) =>
+    option.setName("arret_bus")
+    .setDescription("Arret de bus")
+    .setRequired(true)
+    .addChoices(
+        { name: 'Boulevard de la Seine', value: '24620' },
+        { name: 'Général Leclerc', value: '27700' },
+    )
+    );
 
-fs.readdir('./commands/', (err, files) => {
-    if(err) console.log(err);
+Client.on("ready", () => {
+  Client.application.commands.create(data);
+  console.log("Le bot est prêt !");
+});
 
-    let jsFile = files.filter(f => f.split('.').pop() === 'js');
-    if (jsFile.length <= 0){
-        console.log('Je ne trouve pas la commande ');
-        return;
+Client.on("interactionCreate", async (interaction) => {
+  if (interaction.isCommand()) {
+
+   if (interaction.commandName === "bus") {
+
+    const idArret = interaction.options.get("arret_bus").value;
+    const arrayBus = [];
+
+      const busPromise = axios.get(
+        `https://prim.iledefrance-mobilites.fr/marketplace/stop-monitoring?MonitoringRef=STIF:StopPoint:Q:${idArret}:`,
+        {
+          headers: {
+            apiKey: process.env.API_KEY,
+          },
+        }
+      );
+
+      const busRepesponse = await busPromise;
+      const busJson = busRepesponse.data;
+
+      for (
+        let i = 0;
+        i < busJson.Siri.ServiceDelivery.StopMonitoringDelivery.length;
+        i++
+      ) {
+        arrayBus.push(
+          busJson.Siri.ServiceDelivery.StopMonitoringDelivery[i]
+            .MonitoredStopVisit
+        );
+      }
+
+      const arrayDirectionName = [];
+      const arrayExpectedDepartureTime = [];
+      const arrayDepartureStatus = [];
+      const arrayStationName = [];
+
+      arrayBus.forEach((element) => {
+        element.forEach((monitor) => {
+
+        arrayStationName.push(monitor.MonitoredVehicleJourney.MonitoredCall.StopPointName);
+         arrayDirectionName.push(
+            monitor.MonitoredVehicleJourney.DirectionName
+          );
+          arrayDepartureStatus.push(
+            monitor.MonitoredVehicleJourney.MonitoredCall.DepartureStatus
+          );
+
+          const originalTime =
+            monitor.MonitoredVehicleJourney.MonitoredCall.ExpectedDepartureTime;
+          const updatedTime = updateTime(originalTime, "Europe/Paris");
+          arrayExpectedDepartureTime.push(updatedTime);
+        });
+      });
+
+      if (arrayExpectedDepartureTime.length >= 1) {
+
+        const embed = new EmbedBuilder()
+            .setTitle("Station: " + arrayStationName.map(data => data[0].value)[0])
+            .setDescription("Direction: " + arrayDirectionName.map(data => data[0].value)[0])
+          .setThumbnail(
+            "https://www.bougerenville.com/wp-content/uploads/2019/02/bus-157-idf-ratp.jpg"
+          )
+          .setColor(0x00ae86)
+          .addFields(
+            {
+              name: "Temps d'attente",
+              value: arrayExpectedDepartureTime[0],
+              inline: true,
+            },
+            {
+              name: "Statut",
+              value: arrayDepartureStatus[0],
+              inline: true,
+            }
+          )
+          .addFields(
+            { name: "\u200B", value: "\u200B" },
+            {
+              name: "Temps d'attente",
+              value: arrayExpectedDepartureTime[1],
+              inline: true,
+            },
+            {
+              name: "Statut",
+              value: arrayDepartureStatus[1],
+              inline: true,
+            },
+            { name: "\u200B", value: "\u200B" }
+          )
+
+          .setTimestamp();
+
+        interaction.reply({ embeds: [embed] });
+      } else if (arrayExpectedDepartureTime.length === 0) {
+        const embed = new EmbedBuilder()
+        .setTitle("Station: " + arrayStationName.map(data => data[0].value)[0])
+        .setDescription("Direction: " + arrayDirectionName.map(data => data[0].value)[0])
+          .setThumbnail(
+            "https://www.bougerenville.com/wp-content/uploads/2019/02/bus-157-idf-ratp.jpg"
+          )
+          .setColor(0x00ae86)
+          .addFields(
+            {
+              name: "Temps d'attente",
+              value: arrayExpectedDepartureTime[0],
+              inline: true,
+            },
+            {
+              name: "Statut",
+              value: arrayDepartureStatus[0],
+              inline: true,
+            }
+          )
+
+          .setTimestamp();
+
+        interaction.reply({ embeds: [embed] });
+      } else {
+        const embed = new EmbedBuilder()
+            .setTitle("Information non disponible")
+            .setColor(0x00ae86)
+            .setTimestamp();
+
+        interaction.reply({ embeds: [embed] });
+      }
     }
-
-    jsFile.forEach((f, i ) => {
-        let props = require(`./commands/${f}`);
-        bot.commands.set(props.help.name, props);
-    });
+  }
 });
 
-bot.on('ready', async() => {
-    console.log(`${bot.user.username} est en ligne`);
-    bot.user.setActivity('Regardes les ecrans de la RATP');
-});
+function updateTime(time, timezone) {
+  const originalTime = moment.utc(time);
+  const newTime = moment.tz(originalTime, timezone);
+  const duration = moment.duration(newTime.diff(moment()));
+  return `Dans ${duration.hours()} heures et ${duration.minutes()} minutes`;
+}
 
-bot.on('message', async message => {
-    if (message.author.bot) return;
-    if (message.channel.type === 'dm') return;
-
-    let prefix = process.env.PREFIX;
-    let messageArray = message.content.split(" ");
-    let command =  messageArray [0];
-    let args = messageArray.slice(1);
-
-    let commandFile = bot.commands.get(command.slice(prefix.length));
-    if (commandFile) commandFile.run(bot, message, args);
-
-});
-
-bot.login(process.env.BOT_TOKEN);
-
+Client.login(process.env.TOKEN);
